@@ -1,0 +1,25 @@
+# ── Async I/O (production engine) ──
+aiohttp>=3.9.0
+asyncpg>=0.29.0
+
+# -- Sync HTTP (used by web3.py internally) --
+requests==2.31.0
+psycopg2-binary==2.9.9
+
+# ── Web3 ──
+web3>=6.18.0
+
+# ── API & Server ──
+fastapi==0.111.0
+uvicorn==0.29.0
+
+# ── Utilities ──
+python-dotenv==1.0.1
+apscheduler==3.10.4
+scikit-learn>=1.4.0
+redis>=5.0.0
+taskiq[reload]>=0.11.0
+taskiq-redis>=0.5.0
+taskiq-aio-pika>=0.4.0
+clickhouse-connect>=0.7.0
+aio-pika>=9.4.0
