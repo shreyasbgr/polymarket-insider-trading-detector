@@ -644,18 +644,51 @@ async function initChart() {
 
 async function updateChart() {
   if (!scoreChart) return;
+
   try {
-    const res = await fetch("/api/flagged?per_page=100&page=1&sort_by=global_score");
-    const data = await res.json();
     const bins = new Array(10).fill(0);
-    (data.wallets || []).forEach(w => {
-      const score = w.global_score || w.insider_score || 0;
-      bins[Math.min(9, Math.floor(score * 10))]++;
-    });
+
+    let page = 1;
+    const perPage = 100;
+    let totalFetched = 0;
+
+    while (true) {
+      const res = await fetch(
+        `/api/flagged?per_page=${perPage}&page=${page}&sort_by=global_score`
+      );
+
+      const data = await res.json();
+      const wallets = data.wallets || [];
+
+      // Stop if no more rows returned
+      if (wallets.length === 0) break;
+
+      wallets.forEach(w => {
+        const score = w.global_score ?? w.insider_score ?? 0;
+
+        // Clamp score safely into bins 0–9
+        const idx = Math.max(0, Math.min(9, Math.floor(score * 10)));
+
+        bins[idx]++;
+      });
+
+      totalFetched += wallets.length;
+
+      // If last page has fewer than perPage rows, we are done
+      if (wallets.length < perPage) break;
+
+      page++;
+    }
+
     scoreChart.data.datasets[0].data = bins;
     scoreChart.update();
-  } catch (e) { console.error("Chart update failed:", e); }
+
+    console.log(`Chart updated using ${totalFetched} wallets`);
+  } catch (e) {
+    console.error("Chart update failed:", e);
+  }
 }
+
 
 // ── Initialization ───────────────────────────────────────────────────────────
 async function init() {
