@@ -76,19 +76,67 @@ function toggleAccordion(header) {
   header.nextElementSibling.classList.toggle("active");
 }
 
+let currentPopoverSource = null;
+
 function toggleInfoPopover(btn, event) {
   event.stopPropagation();
-  const popover = btn.querySelector('.info-popover');
-  const wasActive = popover.classList.contains('active');
-  // Close all popovers first
-  document.querySelectorAll('.info-popover.active').forEach(p => p.classList.remove('active'));
-  if (!wasActive) popover.classList.add('active');
+  
+  let globalPopover = document.getElementById('global-info-popover');
+  if (!globalPopover) {
+    globalPopover = document.createElement('div');
+    globalPopover.id = 'global-info-popover';
+    globalPopover.className = 'info-popover';
+    document.body.appendChild(globalPopover);
+  }
+
+  const isSame = currentPopoverSource === btn;
+  const wasActive = globalPopover.classList.contains('active');
+
+  // Close all
+  globalPopover.classList.remove('active');
+  currentPopoverSource = null;
+
+  if (!wasActive || !isSame) {
+    const source = btn.querySelector('.info-popover-content') || btn.querySelector('.info-popover');
+    if (!source) return;
+    
+    globalPopover.innerHTML = source.innerHTML;
+    globalPopover.classList.add('active');
+    currentPopoverSource = btn;
+
+    const rect = btn.getBoundingClientRect();
+    const popoverW = 280;
+    
+    globalPopover.style.position = 'fixed';
+    globalPopover.style.zIndex = '999999';
+    globalPopover.style.right = 'auto';
+    globalPopover.style.margin = '0';
+    
+    let left = rect.left + (rect.width / 2) - (popoverW / 2);
+    if (left < 10) left = 10;
+    if (left + popoverW > window.innerWidth - 10) left = window.innerWidth - popoverW - 10;
+    
+    globalPopover.style.left = left + 'px';
+    globalPopover.style.top = 'auto';
+    globalPopover.style.bottom = (window.innerHeight - rect.top + 8) + 'px';
+    globalPopover.style.transform = 'none';
+  }
 }
 
-// Close popovers on click outside
-document.addEventListener('click', () => {
-  document.querySelectorAll('.info-popover.active').forEach(p => p.classList.remove('active'));
-});
+// Close popovers on click outside or scroll
+const closeAllPopovers = () => {
+  const gp = document.getElementById('global-info-popover');
+  if (gp) {
+    gp.classList.remove('active');
+    currentPopoverSource = null;
+  }
+  document.querySelectorAll('.info-popover.active').forEach(p => {
+    p.classList.remove('active');
+  });
+};
+
+document.addEventListener('click', closeAllPopovers);
+document.addEventListener('scroll', closeAllPopovers, { capture: true, passive: true });
 
 // ── Stats ────────────────────────────────────────────────────────────────────
 async function loadStats() {
@@ -165,11 +213,8 @@ function changeSort(field) {
   loadWallets();
 }
 
-// ── Search ───────────────────────────────────────────────────────────────────
-document.getElementById("searchInput").addEventListener("input", (e) => {
-  clearTimeout(searchTimeout);
-  searchTimeout = setTimeout(() => { searchQuery = e.target.value.trim(); currentPage = 1; loadWallets(); }, 400);
-});
+// ── Search (removed from UI) ─────────────────────────────────────────────────
+// Search input removed — functionality was not working correctly.
 
 // ── Info icon SVG helper ─────────────────────────────────────────────────────
 const INFO_SVG = `<svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`;
@@ -308,21 +353,16 @@ async function openWallet(address) {
         </div>
         <div class="score-content">
           <div class="ml-explanation">${mlExplain}</div>
-          <div class="ml-feature-list">
-            <div class="ml-feature-row"><span class="feature-name">Trade Intensity</span><span class="feature-value">${w.trade_count || 0} trades</span></div>
-            <div class="ml-feature-row"><span class="feature-name">Max Single Exposure</span><span class="feature-value">${fmtUSD(w.max_trade_usdc)}</span></div>
-            <div class="ml-feature-row"><span class="feature-name">Market Diversification</span><span class="feature-value">${w.unique_markets || 0} markets</span></div>
-            <div class="ml-feature-row"><span class="feature-name">Anomaly Percentile</span><span class="feature-value">Top ${(100 - ms * 100).toFixed(1)}%</span></div>
-          </div>
-          <div class="ml-stats-grid" style="margin-top:12px">
-            <div class="ml-stat-item">
-              <div class="ml-stat-label">Model</div>
-              <div class="ml-stat-value">Isolation Forest</div>
-            </div>
-            <div class="ml-stat-item">
-              <div class="ml-stat-label">Features</div>
-              <div class="ml-stat-value">7 dimensions</div>
-            </div>
+
+          <!-- Detailed feature list removed per user request -->
+
+
+          <div style="margin-top:14px;padding:12px;background:var(--bg-secondary);border-radius:8px;border:1px solid var(--border);font-size:11px;color:var(--text-secondary);line-height:1.6">
+            <strong style="color:var(--accent);display:block;margin-bottom:4px">How the scoring happened</strong>
+            This wallet's behavioral fingerprint was analyzed using an <strong>Isolation Forest</strong> model trained on the entire population (7 feature dimensions, 200 trees, 5% contamination). 
+            The model identifies "anomalies" by measuring how many random decision splits are needed to isolate a wallet; fewer splits indicate more unusual behavior. 
+            The raw anomaly scores are then normalized to a 0.0–1.0 range, where 1.0 represents the most statistically extreme outliers in the system. 
+            This unsupervised approach requires no historical "insider" labels and adapts dynamically as new trading patterns emerge.
           </div>
         </div>
       </div>
@@ -407,6 +447,11 @@ async function triggerSync() {
 
 async function confirmReset() {
   if (!confirm("⚠️ NUCLEAR OPTION: This will wipe ALL data. Are you sure?")) return;
+  const pwd = prompt("Enter admin password to confirm system reset:");
+  if (pwd !== "admin123") {
+    alert("❌ Incorrect password. Reset cancelled.");
+    return;
+  }
   const btn = document.querySelector(".btn-danger");
   const originalHTML = btn.innerHTML;
   btn.disabled = true;
@@ -423,6 +468,24 @@ async function confirmReset() {
   }
 }
 
+async function refreshFlaggedWallets() {
+  const btn = document.getElementById("refreshFlaggedBtn");
+  const originalHTML = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner" style="margin:0;width:12px;height:12px;border-width:2px"></div>';
+  try {
+    const res = await fetch("/api/admin/rescore-all", { method: "POST" });
+    const data = await res.json();
+    addAlert("system", "Rescore started — " + (data.message || "wallets are being re-evaluated."));
+    // Optimistically reload after a short delay to show progress
+    setTimeout(() => { loadWallets(); updateChart(); }, 1500);
+  } catch (e) {
+    addAlert("warning", "Failed to trigger rescore: " + e.message);
+  } finally {
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = originalHTML; }, 3000);
+  }
+}
+
 let isPaused = false;
 async function checkPauseStatus() {
   try {
@@ -433,6 +496,11 @@ async function checkPauseStatus() {
 }
 
 async function togglePause() {
+  const pwd = prompt("Enter admin password to toggle sync state:");
+  if (pwd !== "admin123") {
+    alert("❌ Incorrect password. Action cancelled.");
+    return;
+  }
   const btn = document.getElementById("pauseBtn");
   btn.disabled = true;
   try {
@@ -457,16 +525,16 @@ function updatePauseUI(paused) {
   const badge = document.getElementById("statusBadge");
 
   if (paused) {
-    btn.classList.add("btn-danger");
-    btn.classList.remove("btn-secondary");
+    btn.classList.add("btn-success");
+    btn.classList.remove("btn-danger", "btn-secondary");
     text.textContent = "Resume Live Sync";
     icon.setAttribute("d", "M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z M21 12a9 9 0 11-18 0 9 9 0 0118 0z");
     badge.classList.remove("live");
     badge.classList.add("paused");
     document.getElementById("statusText").textContent = "Paused";
   } else {
-    btn.classList.remove("btn-danger");
-    btn.classList.add("btn-secondary");
+    btn.classList.add("btn-danger");
+    btn.classList.remove("btn-success", "btn-secondary");
     text.textContent = "Pause Live Sync";
     icon.setAttribute("d", "M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z");
     badge.classList.add("live");

@@ -589,6 +589,29 @@ async def trigger_score_all():
     return {"status": "Scoring task queued."}
 
 
+@app.post("/api/admin/rescore-all")
+async def rescore_all_existing():
+    """
+    Re-score all existing wallets in the database without fetching any new data.
+    This runs the deterministic scorer + ML anomaly detection on whatever is
+    already stored, then broadcasts pipeline_complete so the UI refreshes.
+    """
+    async def _do_rescore():
+        try:
+            await publish_alert("system", "Rescoring all existing wallets (rules + ML)...")
+            from detection.anomaly import run_anomaly_detection
+            from detection.scorer import score_all_wallets
+            await run_anomaly_detection()
+            await score_all_wallets()
+            await publish_alert("pipeline_complete", "Rescore complete \u2014 flagged wallet table and chart updated.")
+        except Exception as exc:
+            print(f"rescore-all error: {exc}")
+            await publish_alert("warning", f"Rescore failed: {exc}")
+
+    asyncio.create_task(_do_rescore())
+    return {"status": "rescore_queued", "message": "Rescoring all wallets in background."}
+
+
 @app.post("/api/admin/enrich")
 async def trigger_enrich():
     from indexers.deposits import enrich_all_wallets

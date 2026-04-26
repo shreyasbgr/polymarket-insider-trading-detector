@@ -167,6 +167,14 @@ body {
 }
 .btn-danger:hover { background: rgba(239, 68, 68, 0.2); border-color: var(--red); }
 
+.btn-success {
+  background: var(--green-bg);
+  color: var(--green);
+  border-color: rgba(34, 197, 94, 0.2);
+}
+.btn-success:hover { background: rgba(34, 197, 94, 0.2); border-color: var(--green); }
+
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
@@ -493,7 +501,7 @@ tr:hover {
 
 @keyframes modalIn {
   from { opacity: 0; transform: translateY(-20px) scale(0.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 1; transform: none; }
 }
 
 .modal-header {
@@ -800,6 +808,7 @@ tr:hover {
   pointer-events: auto;
   text-transform: none;
   letter-spacing: normal;
+  /* JS will override position/z-index to fixed to escape stacking contexts */
 }
 
 .info-popover.active {
@@ -809,14 +818,15 @@ tr:hover {
 
 @keyframes popoverIn {
   from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
+  to { opacity: 1; transform: none; }
 }
 
 .info-popover::after {
   content: '';
   position: absolute;
   top: 100%;
-  right: 14px;
+  left: 50%;
+  transform: translateX(-50%);
   border-width: 6px;
   border-style: solid;
   border-color: var(--accent) transparent transparent transparent;
@@ -829,7 +839,7 @@ tr:hover {
 /* ── ML Stats Grid ───────────────────────────────────────────── */
 .ml-stats-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 10px;
   margin-top: 12px;
 }
