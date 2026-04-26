@@ -23,3 +23,4 @@ taskiq-redis>=0.5.0
 taskiq-aio-pika>=0.4.0
 clickhouse-connect>=0.7.0
 aio-pika>=9.4.0
+debugpy

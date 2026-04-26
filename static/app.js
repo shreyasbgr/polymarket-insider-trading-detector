@@ -6,6 +6,7 @@
 let currentPage = 1;
 let currentSort = "global_score";
 let currentDir = "desc";
+let sort_dir = "desc";
 let searchQuery = "";
 let searchTimeout = null;
 let scoreChart = null;
@@ -109,8 +110,12 @@ async function loadWallets() {
   const tbody = document.getElementById("walletTableBody");
   tbody.innerHTML = '<tr><td colspan="5" class="loading"><div class="spinner"></div> Loading...</td></tr>';
   try {
-    const params = new URLSearchParams({ page: currentPage, per_page: 25, sort_by: currentSort });
-    if (searchQuery) params.set("search", searchQuery);
+    const params = new URLSearchParams({
+      page: currentPage,
+      per_page: 25,
+      sort_by: currentSort,
+      sort_dir: currentDir
+    });
     const res = await fetch(`/api/flagged?${params}`);
     const data = await res.json();
 
@@ -155,7 +160,7 @@ async function loadWallets() {
 function changePage(delta) { currentPage = Math.max(1, currentPage + delta); loadWallets(); }
 function changeSort(field) {
   if (currentSort === field) { currentDir = currentDir === "asc" ? "desc" : "asc"; }
-  else { currentSort = field; currentDir = "desc"; }
+  else { currentSort = field; currentDir = currentDir === "asc" ? "desc" : "asc"; }
   currentPage = 1;
   loadWallets();
 }
@@ -219,7 +224,7 @@ async function openWallet(address) {
             </div>
           </div>
           <div class="breakdown-value" style="color: ${barColor(val)}">${(val * 100).toFixed(0)}%</div>
-          <div class="breakdown-bar"><div class="breakdown-fill" style="width:${val*100}%;background:${barColor(val)}"></div></div>
+          <div class="breakdown-bar"><div class="breakdown-fill" style="width:${val * 100}%;background:${barColor(val)}"></div></div>
         </div>`;
     }).join("");
 
@@ -234,10 +239,10 @@ async function openWallet(address) {
 
     // ML anomaly explanation
     const mlExplain = ms >= 0.85
-      ? `This wallet is in the <strong style="color:var(--red)">top ${(100 - ms*100).toFixed(1)}%</strong> most anomalous. The Isolation Forest model found its behavioral pattern to be highly unusual compared to the general trading population.`
+      ? `This wallet is in the <strong style="color:var(--red)">top ${(100 - ms * 100).toFixed(1)}%</strong> most anomalous. The Isolation Forest model found its behavioral pattern to be highly unusual compared to the general trading population.`
       : ms >= 0.5
-        ? `This wallet shows some unusual patterns. It sits in the <strong style="color:var(--amber)">top ${(100 - ms*100).toFixed(1)}%</strong> of behavioral outliers.`
-        : `This wallet's behavior is within normal statistical ranges. It ranks in the <strong style="color:var(--green)">top ${(100 - ms*100).toFixed(1)}%</strong> — well within typical trading activity.`;
+        ? `This wallet shows some unusual patterns. It sits in the <strong style="color:var(--amber)">top ${(100 - ms * 100).toFixed(1)}%</strong> of behavioral outliers.`
+        : `This wallet's behavior is within normal statistical ranges. It ranks in the <strong style="color:var(--green)">top ${(100 - ms * 100).toFixed(1)}%</strong> — well within typical trading activity.`;
 
     body.innerHTML = `
       <div class="modal-addr">${w.address}</div>
@@ -276,7 +281,7 @@ async function openWallet(address) {
       <div class="score-section">
         <div class="score-header" onclick="toggleAccordion(this)">
           <div class="score-header-left">
-            <div class="score ${getScoreClass(rs)}" style="width:50px;text-align:center">${(rs*100).toFixed(0)}%</div>
+            <div class="score ${getScoreClass(rs)}" style="width:50px;text-align:center">${(rs * 100).toFixed(0)}%</div>
             <div>
               <div class="score-header-label">Rule-Based Score</div>
               <div class="score-header-sublabel">Deterministic analysis · 60% weight</div>
@@ -293,7 +298,7 @@ async function openWallet(address) {
       <div class="score-section">
         <div class="score-header" onclick="toggleAccordion(this)">
           <div class="score-header-left">
-            <div class="score ${getScoreClass(ms)}" style="width:50px;text-align:center">${(ms*100).toFixed(0)}%</div>
+            <div class="score ${getScoreClass(ms)}" style="width:50px;text-align:center">${(ms * 100).toFixed(0)}%</div>
             <div>
               <div class="score-header-label">ML Anomaly Score</div>
               <div class="score-header-sublabel">Isolation Forest behavioral analysis · 40% weight</div>
@@ -307,7 +312,7 @@ async function openWallet(address) {
             <div class="ml-feature-row"><span class="feature-name">Trade Intensity</span><span class="feature-value">${w.trade_count || 0} trades</span></div>
             <div class="ml-feature-row"><span class="feature-name">Max Single Exposure</span><span class="feature-value">${fmtUSD(w.max_trade_usdc)}</span></div>
             <div class="ml-feature-row"><span class="feature-name">Market Diversification</span><span class="feature-value">${w.unique_markets || 0} markets</span></div>
-            <div class="ml-feature-row"><span class="feature-name">Anomaly Percentile</span><span class="feature-value">Top ${(100 - ms*100).toFixed(1)}%</span></div>
+            <div class="ml-feature-row"><span class="feature-name">Anomaly Percentile</span><span class="feature-value">Top ${(100 - ms * 100).toFixed(1)}%</span></div>
           </div>
           <div class="ml-stats-grid" style="margin-top:12px">
             <div class="ml-stat-item">
@@ -477,29 +482,50 @@ let wsReconnectDelay = 1000;
 function connectWebSocket() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(`${protocol}//${location.host}/ws/alerts`);
+
   ws.onopen = () => {
     document.getElementById("statusText").textContent = "Live";
     wsReconnectDelay = 1000;
     addAlert("system", "Live Feed connection established. Monitoring backend events...");
   };
-  ws.onmessage = (event) => {
+
+  ws.onmessage = async (event) => {
     try {
       const a = JSON.parse(event.data);
-      addAlert(a.type || "info", a.message || JSON.stringify(a));
-      if (a.type === "pipeline_complete" || a.type === "new_trades" || a.type === "live_trade" || a.type === "historical_batch") { 
-        loadStats(); 
-        loadWallets(); 
-        updateChart(); 
-        loadInitialTrades();
+
+      addAlert(
+        a.type || "info",
+        a.message || JSON.stringify(a)
+      );
+
+      if (a.type === "pipeline_complete") {
+        await Promise.all([
+          loadWallets(),
+          updateChart(),
+          loadInitialTrades(),
+          loadStats()
+        ]);
+      } else {
+        await Promise.all([
+          loadStats(),
+          loadInitialTrades()
+        ]);
       }
-    } catch (e) { addAlert("info", event.data); }
+
+    } catch (e) {
+      addAlert("info", event.data);
+    }
   };
+
   ws.onclose = () => {
     document.getElementById("statusText").textContent = "Reconnecting...";
     setTimeout(connectWebSocket, wsReconnectDelay);
     wsReconnectDelay = Math.min(wsReconnectDelay * 2, 30000);
   };
-  ws.onerror = () => { ws.close(); };
+
+  ws.onerror = () => {
+    ws.close();
+  };
 }
 
 function addAlert(type, message, forcedTime = null) {
@@ -518,13 +544,13 @@ function addAlert(type, message, forcedTime = null) {
   targets.forEach(feedId => {
     const feed = document.getElementById(feedId);
     if (!feed) return;
-    
+
     const empty = feed.querySelector(".alert-empty");
     if (empty) empty.remove();
-    
+
     const item = document.createElement("div");
     item.className = "alert-item animate-in";
-    
+
     let typeTag = "";
     if (type === "system") typeTag = '<span class="tag sys">SYS</span> ';
     if (type === "new_trades" || type === "live_trade") typeTag = '<span class="tag green">LIVE</span> ';
@@ -532,10 +558,10 @@ function addAlert(type, message, forcedTime = null) {
     if (type === "pipeline_complete") typeTag = '<span class="tag both">PIPE</span> ';
     if (type === "info") typeTag = '<span class="tag ml">INFO</span> ';
     if (type === "warning") typeTag = '<span class="tag warn">WARN</span> ';
-    
+
     item.innerHTML = `<div class="alert-time">${timeStr}</div><div class="alert-text">${typeTag}${message}</div>`;
     feed.prepend(item);
-    
+
     if (feed.children.length > 100) feed.removeChild(feed.lastChild);
   });
 }
@@ -577,10 +603,10 @@ async function loadAlertHistory() {
     const feed = document.getElementById("alertFeed");
     const empty = feed.querySelector(".alert-empty");
     if (alerts.length > 0 && empty) empty.remove();
-    
+
     // Reverse to add oldest first so they end up at the bottom
     alerts.reverse().forEach(a => {
-        addAlert(a.type, a.message, a.timestamp ? new Date(a.timestamp * 1000) : null);
+      addAlert(a.type, a.message, a.timestamp ? new Date(a.timestamp * 1000) : null);
     });
   } catch (e) {
     console.error("Failed to load alert history:", e);
@@ -593,7 +619,7 @@ async function initChart() {
   scoreChart = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: ['0-10%','10-20%','20-30%','30-40%','40-50%','50-60%','60-70%','70-80%','80-90%','90-100%'],
+      labels: ['0-10%', '10-20%', '20-30%', '30-40%', '40-50%', '50-60%', '60-70%', '70-80%', '80-90%', '90-100%'],
       datasets: [{
         label: 'Wallets', data: new Array(10).fill(0),
         backgroundColor: 'rgba(99, 102, 241, 0.4)',

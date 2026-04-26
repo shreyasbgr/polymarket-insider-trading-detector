@@ -229,6 +229,10 @@ async def get_flagged_wallets(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=25, ge=1, le=100),
     sort_by: str = Query(default="global_score", regex="^(global_score|insider_score|anomaly_score)$"),
+    sort_dir: str = Query(
+        default="desc",
+        regex="^(asc|desc)$"
+    ),
     search: str = Query(default=None, description="Filter by wallet address prefix"),
 ):
     pool = await get_pool()
@@ -236,7 +240,7 @@ async def get_flagged_wallets(
 
     # Base conditions - Show if Global Score is high OR if either component is very high
     # Use COALESCE to handle NULL global_score (wallets scored before column existed)
-    conditions = ["(COALESCE(global_score, insider_score, 0) >= $1 OR anomaly_score >= 0.85 OR insider_score >= $1)"]
+    conditions = ["(COALESCE(global_score, 0) >= $1)"]
     params = [config.INSIDER_THRESHOLD]
 
     if search:
@@ -256,7 +260,7 @@ async def get_flagged_wallets(
                first_deposit_at, scored_at
         FROM wallets
         WHERE {where}
-        ORDER BY COALESCE({sort_by}, 0) DESC
+        ORDER BY COALESCE({sort_by}, 0) {sort_dir.upper()}
         LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
     """, *params, per_page, offset)
 
