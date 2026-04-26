@@ -4,103 +4,169 @@ A highly technical, real-time surveillance engine designed to detect insider tra
 
 ## Table of Contents
 1. [Tech Stack](#tech-stack)
-2. [System Architecture](#system-architecture)
-   - [Components Overview](#components-overview)
-   - [Data Flow](#data-flow)
-   - [WebSocket Subsystem](#websocket-subsystem)
-3. [API Documentation](#api-documentation)
-4. [Installation & Getting Started](#installation--getting-started)
+2. [System Architecture Diagram](#system-architecture-diagram)
+3. [Service Breakdown](#service-breakdown)
+4. [Data Flow Blueprint](#data-flow-blueprint)
+5. [WebSocket Subsystem](#websocket-subsystem)
+6. [API Documentation](#api-documentation)
+7. [Installation & Getting Started](#installation--getting-started)
 
 ---
 
 ## Tech Stack
-- **Backend**: Python 3.12, FastAPI, TaskIQ, Web3.py, asyncpg
+- **Backend**: Python 3.12, FastAPI, TaskIQ, Web3.py, asyncpg, aiohttp
 - **Frontend**: HTML5, Vanilla JavaScript, CSS3, Chart.js
 - **Databases**: PostgreSQL 16 (Relational/Transactional), ClickHouse (OLAP), Redis (Pub/Sub & Cache)
 - **Infrastructure**: Docker Compose, RabbitMQ (Message Broker)
 
 ---
 
-## System Architecture
+## System Architecture Diagram
 
-The application is built on a distributed, microservices-inspired architecture designed for high throughput and real-time processing.
+```mermaid
+graph TD
+    %% External Data Sources
+    subgraph External Sources
+        AlchemyRPC[Alchemy RPC <br/> Polygon Node]
+        TheGraph[The Graph <br/> Subgraph API]
+    end
 
-### Components Overview
+    %% Internal Microservices
+    subgraph Docker Ecosystem
+        API[API Engine <br/> FastAPI]
+        Indexer[Indexer Service <br/> Web3.py]
+        Worker[Background Worker <br/> TaskIQ]
+        
+        %% Databases & Brokers
+        Postgres[(PostgreSQL <br/> Primary DB)]
+        Clickhouse[(ClickHouse <br/> OLAP DB)]
+        Redis[(Redis <br/> Cache & Pub/Sub)]
+        RabbitMQ[(RabbitMQ <br/> Message Broker)]
+    end
 
-1. **API Engine (FastAPI)**
-   - **Function**: Acts as the primary ingress/egress point. It serves the static dashboard frontend, exposes RESTful API endpoints for historical data queries, and maintains persistent WebSocket connections with clients for real-time alerts.
-   - **Key Technologies**: `FastAPI` (ASGI), `uvicorn`, `asyncio`.
+    %% Client Layer
+    subgraph Client
+        Browser[Dashboard UI <br/> HTML/JS/WebSockets]
+    end
 
-2. **Indexer Service**
-   - **Function**: Orchestrates the data ingestion pipeline. On startup, it performs a bulk backfill of historical trades via Polymarket's Subgraph (GraphQL). It then transitions to live mode, continuously polling Alchemy's RPC for live Polygon blockchain logs matching the `OrderFilled` smart contract event.
-   - **Key Technologies**: `Web3.py`, GraphQL HTTP clients, `asyncpg` for batch database insertion.
+    %% Flow External to Internal
+    AlchemyRPC -->|Live OrderFilled Logs| Indexer
+    TheGraph -->|Historical Queries| Indexer
+    AlchemyRPC -->|First Deposit Txs| Worker
 
-3. **Background Worker (TaskIQ)**
-   - **Function**: Handles asynchronous, compute-heavy jobs detached from the API's event loop. It manages the enrichment of wallet profiles (e.g., resolving first deposit timestamps), training the ML model, and scoring wallets.
-   - **Key Technologies**: `TaskIQ`, `scikit-learn` (Isolation Forest).
+    %% Indexer Storage
+    Indexer -->|Batch Insert Trades| Postgres
+    Indexer -->|Batch Insert Trades| Clickhouse
+    Indexer -->|Publish 'historical_batch' / 'live_trade'| Redis
 
-4. **PostgreSQL**
-   - **Function**: The primary relational source of truth. Stores wallet profiles, final computed risk scores (`insider_score`, `anomaly_score`, `global_score`), market metadata, and normalized trade events.
+    %% Worker Operations
+    API -->|Queue ML/Enrich Tasks| RabbitMQ
+    RabbitMQ -->|Consume Tasks| Worker
+    Worker -->|Fetch Wallet Profiles| Postgres
+    Worker -->|Execute ML Aggregations| Clickhouse
+    Worker -->|Update Anomaly Scores| Postgres
+    Worker -->|Publish 'pipeline_complete'| Redis
 
-5. **ClickHouse**
-   - **Function**: Specialized OLAP database used strictly for high-speed analytical queries. The ML engine queries ClickHouse to instantly aggregate millions of trades into behavioral feature matrices without lagging the transactional Postgres DB.
+    %% API Layer
+    Redis -->|Subscribe 'alerts' channel| API
+    API <-->|REST API Queries| Postgres
+    API -->|Broadcast WebSocket Events| Browser
+    Browser -->|Fetch UI Data| API
+```
 
-6. **Redis**
-   - **Function**: Provides volatile caching (e.g., API statistics) and serves as the Pub/Sub backbone. Both the Indexer and Worker publish JSON alert payloads to a Redis channel, which the FastAPI engine consumes and broadcasts to WebSocket clients.
+---
 
-7. **RabbitMQ**
-   - **Function**: Message broker that reliably queues and routes background task requests (e.g., "Run full ML pipeline") from the API engine to available TaskIQ workers.
+## Service Breakdown
 
-### Data Flow
+### 1. API Engine (FastAPI)
+The primary interface for client applications, running via Uvicorn on an ASGI server.
+- **Responsibilities**: Serves the static assets (HTML/JS/CSS), manages RESTful routing for the dashboard, and handles lifecycle events. 
+- **Connection Management**: Instantiates the global connection pool for Postgres (`asyncpg`) and maintains an active `asyncio.Task` listening to the Redis Pub/Sub channel. When messages arrive, they are instantly fanned out to all connected `WebSocket` clients.
 
-1. **Ingestion (Historical & Live)**
+### 2. Indexer Service
+A continuously running Python process tasked with blockchain synchronization.
+- **Backfill Phase**: Uses `aiohttp` to query The Graph's Polymarket subgraph, paginating through historical `OrderFilled` events using timestamp cursors. Trades are mapped into Postgres/ClickHouse schemas.
+- **Live Phase**: Connects to Alchemy via `Web3.py` with PoA middleware injected. It uses `eth_getLogs` to poll blocks for the specific `OrderFilled` signature hash. 
+- **Performance**: To prevent DB locks and connection exhaustion, the indexer groups transactions and executes bulk inserts using `executemany` against connection pools.
+
+### 3. Background Worker (TaskIQ)
+An asynchronous worker process mapped to consume queues from RabbitMQ.
+- **Wallet Enrichment**: Calls Polygon RPCs to fetch the very first transaction hash for a wallet, establishing wallet creation age.
+- **Machine Learning**: Uses `scikit-learn`'s `IsolationForest`. Instead of querying millions of rows from Postgres, it routes aggregation queries (`sum`, `count`, `max`) to **ClickHouse**, which calculates the multi-dimensional feature matrix in milliseconds. It then trains the model and flags statistical outliers.
+- **Deterministic Rules Engine**: Calculates an `insider_score` via hardcoded risk heuristics (e.g., trade concentration >90%, entry timing <2 hours to resolution).
+
+### 4. PostgreSQL 16
+The source of truth for application state and relationships.
+- **Schema**: Houses the `wallets` table (containing all risk scores and timestamps), the `markets` table (resolutions and questions), and the transactional `trades` table.
+- **Concurrency**: Specifically tuned with connection pooling (`DB_POOL_MIN`, `DB_POOL_MAX`) to handle massive concurrent `INSERT ON CONFLICT DO NOTHING` statements from the Indexer without blocking API reads.
+
+### 5. ClickHouse
+A columnar database heavily optimized for OLAP workloads.
+- **Function**: Replicates the `trades` table structure. Designed exclusively for the ML Worker to perform blazing-fast analytical queries over the entire history of trades, circumventing the traditional index bottlenecks of B-Tree relational databases.
+
+### 6. Redis
+- **Volatile Storage**: Used for temporary API request caching (e.g., global stats) to prevent database hammering during traffic spikes.
+- **Pub/Sub**: The backbone of the real-time alerting system. The isolated Docker containers (`Indexer`, `Worker`) use Redis `PUBLISH` to send events (like trade insertions or pipeline completions), which the API engine `SUBSCRIBE`s to.
+
+### 7. RabbitMQ
+- **Message Broker**: Serves as the durable queue holding serialized background tasks created by the API. Ensures tasks like `run_full_pipeline` or `score_all_wallets` are robustly distributed to the TaskIQ worker and guarantees delivery even if a container restarts.
+
+---
+
+## Data Flow Blueprint
+
+1. **Ingestion Loop**: 
    - The `Indexer` service queries The Graph for past trades and Alchemy's RPC for live `OrderFilled` events.
-   - It parses raw blockchain hex data into human-readable amounts (e.g., converting token decimals to USDC).
+   - It parses raw blockchain hex data and ABI arguments into human-readable structures (e.g., converting token amounts based on decimals to standard USDC formats).
    - Cleaned trade records are batch-inserted into both **PostgreSQL** and **ClickHouse** simultaneously.
    
-2. **Event Broadcasting**
-   - After a batch insertion, the Indexer publishes a `historical_batch` or `live_trade` event to **Redis Pub/Sub**.
-   - The FastAPI Engine, listening on this Redis channel, forwards the event to all connected UI clients via **WebSockets**, forcing the dashboard to dynamically fetch the new trades.
+2. **Event Broadcasting**:
+   - Following a successful batch insertion, the Indexer publishes a `historical_batch` or `live_trade` event to **Redis Pub/Sub**.
+   - The FastAPI Engine listens to this channel, parses the JSON payload, and forwards it to active **WebSocket** clients. The Dashboard UI intercepts this message and forces a selective re-fetch of trade data to maintain real-time parity.
 
-3. **Enrichment**
-   - The TaskIQ `Worker` identifies wallets missing creation timestamps and queries Polygon for their first inbound transaction, updating Postgres.
+3. **Wallet Profiling (Enrichment)**:
+   - When new wallets are detected, the API enqueues a task to RabbitMQ. The `Worker` consumes it, queries Polygon for the wallet's first inbound transaction, and updates the `first_deposit_at` column in Postgres.
 
-4. **Detection Pipeline**
-   - **Machine Learning**: The worker queries ClickHouse to aggregate wallet behaviors (trade counts, diversification, max exposure). It trains an `IsolationForest` model to detect outliers, assigning an `anomaly_score` to Postgres.
-   - **Deterministic Rules**: The rule-based engine assigns an `insider_score` based on risk vectors like trading huge volume exclusively hours before a market resolves.
+4. **Threat Detection Cycle**:
+   - The ML worker queries ClickHouse to extract aggregated wallet behaviors (total trades, market diversification, maximum single-trade exposure). It trains an `IsolationForest` model to detect outliers and assigns an `anomaly_score` to Postgres.
+   - Concurrently, the rule-based engine assigns an `insider_score` based on deterministic vectors (e.g., entering maximum capital strictly 2 hours before a market resolves).
+   - A unified `global_score` is computed (60% Rules, 40% ML) and saved to Postgres. 
 
-5. **Actionable Intelligence**
-   - A unified `global_score` is computed (60% Rules, 40% ML) and saved to PostgreSQL. 
-   - The frontend consumes these scores via the `/api/flagged` REST endpoint to visualize a ranked list of suspicious wallets.
+5. **Actionable Intelligence**:
+   - The frontend consumes these scores via the `/api/flagged` REST endpoint to visualize a ranked, paginated list of suspicious wallets, continuously re-hydrated by WebSocket prompts.
 
-### WebSocket Subsystem
+---
 
-The application relies heavily on WebSockets to achieve a "live" feel without aggressive HTTP polling.
+## WebSocket Subsystem
 
-- **Redis Pub/Sub Integration**: Because FastAPI runs in an isolated container, the background `Indexer` and `Worker` containers cannot communicate directly with the WebSocket connections held by the API. To bridge this, all services publish JSON messages to a Redis channel named `alerts`.
-- **Async Broadcast**: A dedicated `asyncio.create_task` loop inside the FastAPI lifespan continuously listens to the Redis channel. When a message arrives, it serializes the payload and pushes it to an in-memory `set` of all active `WebSocket` client connections.
-- **Client Handling**: The frontend connects to `ws://localhost:8000/ws/alerts` on load. Upon receiving a `live_trade` or `pipeline_complete` message, the UI selectively invalidates its cache and re-fetches the necessary data segments.
+The application leverages WebSockets to achieve zero-latency UI updates, negating the need for aggressive, resource-intensive HTTP polling.
+
+- **Cross-Container Pub/Sub**: Because FastAPI operates in an isolated Docker container, background services like the `Indexer` cannot directly push to the API's WebSocket connections. To bridge this, all services serialize events to JSON and publish them to a Redis channel named `alerts`.
+- **Async Fan-out**: A dedicated background loop inside FastAPI's startup lifecycle (`asyncio.create_task`) continuously listens to the Redis channel. When a message is detected, it pushes it to an in-memory `set` containing all currently active `WebSocket` client connections.
+- **Client Cache Invalidation**: The dashboard connects to `ws://{HOST}/ws/alerts`. Upon receiving a `live_trade` or `pipeline_complete` socket message, the UI selectively invalidates its HTML DOM state and queries the API for fresh datasets.
 
 ---
 
 ## API Documentation
 
-### 1. Retrieve Flagged Wallets
+### GET Endpoints
+
+#### 1. Retrieve Flagged Wallets
 **Endpoint**: `GET /api/flagged`
-**Description**: Fetches a paginated list of wallets sorted by risk score.
-**Query Parameters**:
-- `page` (int): Page number (default: 1)
-- `per_page` (int): Results per page (default: 25)
-- `sort_by` (str): Sort field (`global_score`, `insider_score`, `anomaly_score`)
-- `search` (str): Optional wallet address prefix to filter by.
+**Description**: Fetches a paginated, sorted list of wallets that meet the minimum risk thresholds.
+**Parameters**:
+- `page` (int, default=1): Page index.
+- `per_page` (int, default=25): Constraints results per page (max 100).
+- `sort_by` (str, default=global_score): Column to rank by (`global_score`, `insider_score`, `anomaly_score`).
+- `search` (str, optional): Wallet address `ILIKE` substring filter.
 
 **Expected Output**:
 ```json
 {
-  "total": 124,
+  "total": 150,
   "page": 1,
   "per_page": 25,
-  "pages": 5,
+  "pages": 6,
   "wallets": [
     {
       "address": "0x123abc...",
@@ -115,9 +181,9 @@ The application relies heavily on WebSockets to achieve a "live" feel without ag
 }
 ```
 
-### 2. Retrieve Wallet Details
+#### 2. Retrieve Wallet Deep Dive
 **Endpoint**: `GET /api/wallets/{address}`
-**Description**: Fetches deep diagnostic details and a chronological trade ledger for a specific wallet.
+**Description**: Fetches granular diagnostic details, the chronological trade ledger, and the exact scoring breakdown factors for a specific wallet.
 
 **Expected Output**:
 ```json
@@ -146,11 +212,11 @@ The application relies heavily on WebSockets to achieve a "live" feel without ag
 }
 ```
 
-### 3. Retrieve Live Trades
-**Endpoint**: `GET /api/trades/live`
-**Description**: Fetches the most recently detected on-chain trades.
-**Query Parameters**:
-- `limit` (int): Max records to return (default: 50)
+#### 3. Retrieve Feed Data
+**Endpoint**: `GET /api/trades/historical` & `GET /api/trades/live`
+**Description**: Fetches the most recently detected on-chain trades, segregated by their ingestion source. Historical sources from block 0 (The Graph), while Live sources from active blocks (Alchemy RPC).
+**Parameters**:
+- `limit` (int, default=50): Max records to retrieve.
 
 **Expected Output**:
 ```json
@@ -166,9 +232,9 @@ The application relies heavily on WebSockets to achieve a "live" feel without ag
 ]
 ```
 
-### 4. Admin Diagnostics
+#### 4. Diagnostic Health Checks
 **Endpoint**: `GET /api/admin/health-check`
-**Description**: Performs connectivity checks against all internal distributed systems and external RPCs.
+**Description**: Triggers a live TCP/HTTP ping across all internal distributed systems (Postgres, Redis, ClickHouse, RabbitMQ) and external APIs (Alchemy, The Graph). Used by the dashboard to power the "Systems Check" modal.
 
 **Expected Output**:
 ```json
@@ -176,11 +242,28 @@ The application relies heavily on WebSockets to achieve a "live" feel without ag
   "postgres": { "status": "ok", "message": "Connected" },
   "redis": { "status": "ok", "message": "Connected" },
   "clickhouse": { "status": "ok", "message": "Connected" },
-  "rabbitmq": { "status": "ok", "message": "Connected" },
+  "rabbitmq": { "status": "ok", "message": "Broker Active" },
   "alchemy": { "status": "ok", "message": "Block: 56789123" },
   "the_graph": { "status": "ok", "message": "Subgraph Responsive" }
 }
 ```
+
+### POST Endpoints (Admin Triggers)
+
+#### 1. Trigger Full Synchronization Pipeline
+**Endpoint**: `POST /api/admin/sync`
+**Description**: Flushes the Redis cache and pushes a master orchestration task to RabbitMQ, prompting the TaskIQ worker to execute `run_full_pipeline()`.
+**Expected Output**: `{"status": "queued"}`
+
+#### 2. Toggle Live Polling Pause State
+**Endpoint**: `POST /api/admin/toggle-pause`
+**Description**: Mutates a Redis key (`app_paused`) and broadcasts a WebSocket alert. The `Indexer` checks this key during its loop; if `true`, it sleeps and bypasses RPC calls, effectively halting ingestion without stopping the container.
+**Expected Output**: `{"paused": true}`
+
+#### 3. Nuclear Reset
+**Endpoint**: `POST /api/admin/reset`
+**Description**: Executes `TRUNCATE TABLE` on all PostgreSQL tables (trades, wallets, markets, indexer_state), `TRUNCATE`s the ClickHouse analytical trades table, and performs `FLUSHALL` on Redis. Broadcasts a `system_reset` websocket event. Used to completely wipe the surveillance slate clean.
+**Expected Output**: `{"status": "success", "message": "System wiped successfully."}`
 
 ---
 
