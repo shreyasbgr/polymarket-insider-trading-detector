@@ -1,5 +1,7 @@
 # Polymarket Insider Trading Detector
 
+> **Deployed Version**: [http://fireplace.shreyasbanagar.com:8000/](http://fireplace.shreyasbanagar.com:8000/)
+
 A highly technical, real-time surveillance engine designed to detect insider trading and anomalous wallet behavior on Polymarket prediction markets. It combines deterministic rule-based analysis with Machine Learning (Isolation Forest) to surface highly suspicious wallets, presenting the intelligence in a real-time, responsive dashboard.
 
 ## Table of Contents
@@ -155,115 +157,43 @@ The application leverages WebSockets to achieve zero-latency UI updates, negatin
 **Endpoint**: `GET /api/flagged`
 **Description**: Fetches a paginated, sorted list of wallets that meet the minimum risk thresholds.
 **Parameters**:
-- `page` (int, default=1): Page index.
-- `per_page` (int, default=25): Constraints results per page (max 100).
-- `sort_by` (str, default=global_score): Column to rank by (`global_score`, `insider_score`, `anomaly_score`).
-- `search` (str, optional): Wallet address `ILIKE` substring filter.
-
-**Expected Output**:
-```json
-{
-  "total": 150,
-  "page": 1,
-  "per_page": 25,
-  "pages": 6,
-  "wallets": [
-    {
-      "address": "0x123abc...",
-      "insider_score": 0.85,
-      "anomaly_score": 0.91,
-      "global_score": 0.88,
-      "flagged": true,
-      "first_deposit_at": "2023-10-14T08:30:00",
-      "scored_at": "2023-11-01T12:00:00"
-    }
-  ]
-}
-```
+- `page` (int): Page index.
+- `per_page` (int): Results per page (max 100).
+- `sort_by` (str): Column to rank by (`global_score`, `insider_score`, `anomaly_score`).
+- `sort_dir` (str): Sort direction (`asc`, `desc`).
+- `search` (str): Wallet address filter.
 
 #### 2. Retrieve Wallet Deep Dive
 **Endpoint**: `GET /api/wallets/{address}`
-**Description**: Fetches granular diagnostic details, the chronological trade ledger, and the exact scoring breakdown factors for a specific wallet.
+**Description**: Fetches granular diagnostic details, trade ledger, and scoring breakdown.
 
-**Expected Output**:
-```json
-{
-  "address": "0x123abc...",
-  "global_score": 0.88,
-  "verdict": "High-risk anomaly. Extreme concentration prior to resolution.",
-  "breakdown": {
-    "entry_timing": 1.0,
-    "trade_concentration": 0.8,
-    "trade_size": 0.7,
-    "wallet_age": 1.0,
-    "market_count": 1.0
-  },
-  "trade_count": 4,
-  "max_trade_usdc": 25000.50,
-  "trades": [
-    {
-      "tx_hash": "0xabc123...",
-      "condition_id": "0x567def...",
-      "usdc_amount": 25000.50,
-      "price": 0.99,
-      "traded_at": "2023-10-31T23:55:00"
-    }
-  ]
-}
-```
-
-#### 3. Retrieve Feed Data
-**Endpoint**: `GET /api/trades/historical` & `GET /api/trades/live`
-**Description**: Fetches the most recently detected on-chain trades, segregated by their ingestion source. Historical sources from block 0 (The Graph), while Live sources from active blocks (Alchemy RPC).
-**Parameters**:
-- `limit` (int, default=50): Max records to retrieve.
-
-**Expected Output**:
-```json
-[
-  {
-    "tx_hash": "0xdef456...",
-    "maker": "0x123abc...",
-    "taker": "0x987zyx...",
-    "usdc_amount": 1500.00,
-    "price": 0.55,
-    "traded_at": "2023-11-01T12:05:00"
-  }
-]
-```
+#### 3. Retrieve Trade Feeds
+**Endpoints**: `GET /api/trades/historical` & `GET /api/trades/live`
+**Description**: Fetches recent trades by ingestion source.
 
 #### 4. Diagnostic Health Checks
 **Endpoint**: `GET /api/admin/health-check`
-**Description**: Triggers a live TCP/HTTP ping across all internal distributed systems (Postgres, Redis, ClickHouse, RabbitMQ) and external APIs (Alchemy, The Graph). Used by the dashboard to power the "Systems Check" modal.
-
-**Expected Output**:
-```json
-{
-  "postgres": { "status": "ok", "message": "Connected" },
-  "redis": { "status": "ok", "message": "Connected" },
-  "clickhouse": { "status": "ok", "message": "Connected" },
-  "rabbitmq": { "status": "ok", "message": "Broker Active" },
-  "alchemy": { "status": "ok", "message": "Block: 56789123" },
-  "the_graph": { "status": "ok", "message": "Subgraph Responsive" }
-}
-```
+**Description**: Live TCP/HTTP ping across internal and external services.
 
 ### POST Endpoints (Admin Triggers)
 
-#### 1. Trigger Full Synchronization Pipeline
+> **Security Note**: Admin actions (Pause, Reset) triggered via the Dashboard UI require the administrative password (`admin123`).
+
+#### 1. Rescore All Wallets
+**Endpoint**: `POST /api/admin/rescore-all`
+**Description**: Re-evaluates all existing wallets in the database (Rules + ML) without fetching new trades.
+
+#### 2. Trigger Pipeline Sync
 **Endpoint**: `POST /api/admin/sync`
-**Description**: Flushes the Redis cache and pushes a master orchestration task to RabbitMQ, prompting the TaskIQ worker to execute `run_full_pipeline()`.
-**Expected Output**: `{"status": "queued"}`
+**Description**: Flushes cache and queues a full backfill/scoring task.
 
-#### 2. Toggle Live Polling Pause State
+#### 3. Toggle Live Polling
 **Endpoint**: `POST /api/admin/toggle-pause`
-**Description**: Mutates a Redis key (`app_paused`) and broadcasts a WebSocket alert. The `Indexer` checks this key during its loop; if `true`, it sleeps and bypasses RPC calls, effectively halting ingestion without stopping the container.
-**Expected Output**: `{"paused": true}`
+**Description**: Pauses/Resumes the on-chain live trade indexer.
 
-#### 3. Nuclear Reset
+#### 4. Nuclear Reset
 **Endpoint**: `POST /api/admin/reset`
-**Description**: Executes `TRUNCATE TABLE` on all PostgreSQL tables (trades, wallets, markets, indexer_state), `TRUNCATE`s the ClickHouse analytical trades table, and performs `FLUSHALL` on Redis. Broadcasts a `system_reset` websocket event. Used to completely wipe the surveillance slate clean.
-**Expected Output**: `{"status": "success", "message": "System wiped successfully."}`
+**Description**: **Destructive.** Wipes all database tables, ClickHouse data, and Redis caches.
 
 ---
 
@@ -274,15 +204,34 @@ The application leverages WebSockets to achieve zero-latency UI updates, negatin
 - Alchemy API Key (Polygon Mainnet)
 - The Graph API Key
 
+### Configuration (`.env`)
+Create a `.env` file in the root directory:
+```env
+# Essential RPC & API Keys
+ALCHEMY_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
+SUBGRAPH_URL=https://gateway.thegraph.com/api/YOUR_KEY/subgraphs/id/...
+
+# Database Connections (Docker defaults)
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/polymarket
+REDIS_URL=redis://redis:6379/0
+RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+CLICKHOUSE_HOST=clickhouse
+
+# Scoring & Tuning
+INSIDER_THRESHOLD=0.65
+POLL_INTERVAL_SECONDS=15
+```
+
 ### Installation
-1. Clone the repository and navigate into the directory.
-2. Configure your `.env` file with your API keys:
-   ```env
-   ALCHEMY_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
-   SUBGRAPH_URL=https://gateway.thegraph.com/api/YOUR_KEY/...
-   ```
+1. Clone the repository.
+2. Configure `.env` as shown above.
 3. Start the system:
    ```bash
    docker compose up -d --build
    ```
 4. Access the dashboard at `http://localhost:8000`.
+
+---
+
+## License
+MIT License.
